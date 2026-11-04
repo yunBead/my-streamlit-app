@@ -160,7 +160,7 @@ def make_speech(client, answer):
 
 # 화면에는 전체 대화를 보관하고, 모델에는 최근 10회 문답만 전달
 defaults = {"messages": [], "meeting_text": "", "meeting_id": "", "meeting_name": "",
-            "last_audio": None, "reply_audio": None}
+            "last_audio": None, "reply_audio": None, "input_version": 0}
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
@@ -175,23 +175,32 @@ with st.sidebar:
     st.caption("전체 대화를 스크롤로 확인할 수 있습니다. AI는 최근 10회 문답을 참고합니다.")
     st.caption("음성 답변은 AI가 생성합니다.")
     if st.button("대화 초기화"):
-        st.session_state.messages = []
-        st.session_state.reply_audio = None
+        version = st.session_state.input_version + 1
+        for key, value in defaults.items():
+            st.session_state[key] = value
+        # 위젯 키도 변경해 첨부파일과 녹음이 다시 적용되지 않게 함
+        st.session_state.input_version = version
         st.rerun()
 
 st.title("김 대리님, 무엇을 도와드릴까요?")
 st.caption("채팅으로 입력하거나, 입력창 옆에서 회의록을 첨부하고 음성으로 요청하세요.")
 conversation = st.container(height=450, border=True)
+file_status = st.empty()
 
 # 채팅 바로 옆에 파일 첨부와 녹음·실행 배치
 file_col, voice_col, chat_col = st.columns([1, 1, 6], vertical_alignment="bottom")
 with file_col:
     with st.popover("📎 첨부", use_container_width=True):
-        uploaded_file = st.file_uploader("회의록 TXT", type=["txt"])
+        uploaded_file = st.file_uploader("회의록 TXT", type=["txt"], key=f"file_{st.session_state.input_version}")
+        file_error = ""
         if uploaded_file is not None:
             data = uploaded_file.getvalue()
-            file_id = hashlib.sha256(data).hexdigest()
+            file_id = uploaded_file.name + hashlib.sha256(data).hexdigest()
             if file_id != st.session_state.meeting_id:
+                # 새 파일을 읽지 못했을 때 이전 회의록을 참고하지 않도록 비움
+                st.session_state.meeting_text = ""
+                st.session_state.meeting_id = ""
+                st.session_state.meeting_name = ""
                 try:
                     try:
                         text = data.decode("utf-8-sig")
@@ -204,17 +213,26 @@ with file_col:
                     st.session_state.meeting_name = uploaded_file.name
                     # 파일이 바뀌어도 기존 대화는 유지
                 except (UnicodeDecodeError, ValueError):
-                    st.error("내용을 읽을 수 없습니다. UTF-8 텍스트 파일을 올려주세요.")
+                    file_error = f"{uploaded_file.name}: 내용을 읽을 수 없습니다. UTF-8 텍스트 파일을 올려주세요."
+        else:
+            st.session_state.meeting_text = ""
+            st.session_state.meeting_id = ""
+            st.session_state.meeting_name = ""
         if st.session_state.meeting_text:
             st.text(st.session_state.meeting_text)
 with voice_col:
     with st.popover("🎙️ 음성", use_container_width=True):
         with st.form("voice_form"):
-            recording = st.audio_input("음성으로 요청해주세요")
+            recording = st.audio_input("음성으로 요청해주세요", key=f"voice_{st.session_state.input_version}")
             submit = st.form_submit_button("실행", use_container_width=True)
 with chat_col:
-    chat_input = st.chat_input("에이블에게 메시지를 보내세요…")
-st.caption("현재 참고 파일: " + (st.session_state.meeting_name or "없음"))
+    chat_input = st.chat_input("에이블에게 메시지를 보내세요…", key=f"chat_{st.session_state.input_version}")
+if file_error:
+    file_status.error(file_error)
+elif st.session_state.meeting_name:
+    file_status.success(f"📎 적용된 회의록: {st.session_state.meeting_name} · {len(st.session_state.meeting_text):,}자 · 답변에 참고 중")
+else:
+    file_status.info("첨부된 회의록이 없습니다. 📎 첨부 버튼에서 파일을 올려주세요.")
 
 # 기록을 먼저 출력해 처리 중에도 지난 대화 확인 가능
 with conversation:
