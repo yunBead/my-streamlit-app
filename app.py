@@ -15,6 +15,8 @@ st.set_page_config(page_title="에이블 | 김 대리의 AI 개인비서", page_
 sys_role = """
 당신은 김 대리의 전문 AI 개인비서 '에이블'입니다.
 친절하고 정확하게 답하며, 이전 대화를 참고해 후속 질문에도 답합니다.
+파일이 바뀌어도 대화는 이어집니다. 회의록에 대한 새 질문은 현재 첨부 자료를 기준으로 답하고,
+이전 대화에서 언급한 자료와 현재 자료를 혼동하지 않습니다.
 
 1. 회의록을 요청받으면 핵심 내용, 주요 결정 사항, 김 대리 담당 업무로 나누어 정리합니다.
 2. 담당 업무에 마감일, 협업 대상, 주의사항이 있으면 함께 정리합니다.
@@ -82,11 +84,11 @@ def send_email(to, subject, body):
 
 
 def get_answer(client, messages, meeting_text):
-    # 회의록은 별도 자료로 전달하고, 대화는 최근 10개 메시지만 사용
+    # 현재 질문과 직전 10회 문답을 전달 (화면 기록은 삭제하지 않음)
     input_messages = [{"role": "system", "content": sys_role}]
     if meeting_text:
         input_messages.append({"role": "user", "content": "[첨부 회의록: 분석 자료]\n" + meeting_text})
-    input_messages.extend(messages[-10:])
+    input_messages.extend(messages[-21:])
     response = client.responses.create(
         model="gpt-4o-mini", input=input_messages,
         tools=tools, tool_choice="auto", parallel_tool_calls=False
@@ -99,7 +101,7 @@ def get_answer(client, messages, meeting_text):
     mail_results = []
     # 최종 응답용으로 도구 호출 자체도 함께 보관
     input_messages.extend(response.output)
-    user_text = "\n".join(m["content"] for m in messages[-10:] if m["role"] == "user")
+    user_text = "\n".join(m["content"] for m in messages[-21:] if m["role"] == "user")
     addresses = {address.lower() for address in re.findall(
         r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", user_text
     )}
@@ -139,21 +141,11 @@ def get_answer(client, messages, meeting_text):
 
 
 def make_speech(client, answer):
-    # 긴 답변은 문장 단위로 나누어 전체를 음성으로 변환
-    parts = []
-    start = 0
-    while start < len(answer):
-        end = min(start + 1500, len(answer))
-        if end < len(answer):
-            split = max(answer.rfind("\n", start, end), answer.rfind(". ", start, end))
-            if split > start:
-                end = split + 1
-        parts.append(answer[start:end])
-        start = end
+    # 긴 답변도 잘라서 전체를 변환
     audio_parts = []
-    for part in parts:
+    for start in range(0, len(answer), 1500):
         speech = client.audio.speech.create(
-            model="gpt-4o-mini-tts", voice="nova", input=part, response_format="pcm"
+            model="gpt-4o-mini-tts", voice="nova", input=answer[start:start + 1500], response_format="pcm"
         )
         audio_parts.append(speech.content)
     # PCM을 하나의 WAV로 묶어 긴 답변도 연속 재생
@@ -166,161 +158,116 @@ def make_speech(client, answer):
     return output.getvalue()
 
 
-# 세션 상태 초기화
+# 화면에는 전체 대화를 보관하고, 모델에는 최근 10회 문답만 전달
 defaults = {"messages": [], "meeting_text": "", "meeting_id": "", "meeting_name": "",
-            "audio_key": 0, "last_audio": None, "last_reply": "", "reply_audio": None,
-            "audio_notice": "", "mail_results": []}
+            "last_audio": None, "reply_audio": None}
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-
-# 화면 구성
-robot_path = Path(__file__).resolve().parent / "Docs" / "aivle_robot.png"
 with st.sidebar:
-    if robot_path.exists():
-        st.image(str(robot_path), width=180)
+    robot = Path(__file__).resolve().parent / "Docs" / "aivle_robot.png"
+    if robot.exists():
+        st.image(str(robot), width=160)
     st.title("에이블")
     st.caption("김 대리의 AI 개인비서")
-    st.markdown("회의 요약 · 담당 업무 확인 · 이메일 발송")
-    st.divider()
-    st.write("**사용 방법**")
-    st.write("1. 회의록을 첨부합니다.\n2. 채팅으로 입력하거나 음성을 녹음합니다.\n3. 채팅을 전송하거나 음성 실행을 누릅니다.")
-    st.caption("메일을 보내려면 수신자 주소와 발송 요청을 채팅이나 음성으로 알려주세요.")
-    st.caption("답변 음성은 AI가 생성합니다. 최근 대화 10개 메시지(약 5회 문답)를 보관합니다.")
-    if st.button("대화 초기화", use_container_width=True):
-        for key, value in defaults.items():
-            if key not in ["meeting_text", "meeting_id", "meeting_name", "audio_key"]:
-                st.session_state[key] = value
-        st.session_state.audio_key += 1
+    st.write("회의 요약 · 담당 업무 확인 · 이메일 발송")
+    st.caption("전체 대화를 스크롤로 확인할 수 있습니다. AI는 최근 10회 문답을 참고합니다.")
+    st.caption("음성 답변은 AI가 생성합니다.")
+    if st.button("대화 초기화"):
+        st.session_state.messages = []
+        st.session_state.reply_audio = None
         st.rerun()
 
 st.title("김 대리님, 무엇을 도와드릴까요?")
-st.caption("회의록을 바탕으로 내용을 정리하고, 채팅과 음성으로 요청하신 업무를 도와드립니다.")
-left, right = st.columns([1, 2], gap="large")
-with left:
-    st.subheader("업무 요청")
-    uploaded_file = st.file_uploader("회의록 첨부", type=["txt"])
-    if uploaded_file is not None:
-        file_data = uploaded_file.getvalue()
-        file_id = hashlib.sha256(file_data).hexdigest()
-        if file_id != st.session_state.meeting_id:
-            try:
+st.caption("채팅으로 입력하거나, 입력창 옆에서 회의록을 첨부하고 음성으로 요청하세요.")
+conversation = st.container(height=450, border=True)
+
+# 채팅 바로 옆에 파일 첨부와 녹음·실행 배치
+file_col, voice_col, chat_col = st.columns([1, 1, 6], vertical_alignment="bottom")
+with file_col:
+    with st.popover("📎 첨부", use_container_width=True):
+        uploaded_file = st.file_uploader("회의록 TXT", type=["txt"])
+        if uploaded_file is not None:
+            data = uploaded_file.getvalue()
+            file_id = hashlib.sha256(data).hexdigest()
+            if file_id != st.session_state.meeting_id:
                 try:
-                    text = file_data.decode("utf-8-sig")
-                except UnicodeDecodeError:
-                    text = file_data.decode("cp949")
-                if not text.strip():
-                    raise ValueError("빈 파일입니다.")
-            except (UnicodeDecodeError, ValueError):
-                st.error("파일 내용을 읽을 수 없습니다. UTF-8로 저장한 텍스트 파일을 올려주세요.")
-                st.stop()
-            st.session_state.meeting_text = text
-            st.session_state.meeting_id = file_id
-            st.session_state.meeting_name = uploaded_file.name
-            st.session_state.messages = []
-            st.session_state.last_reply = ""
-            st.session_state.reply_audio = None
-            st.session_state.audio_notice = ""
-            st.session_state.mail_results = []
-            st.session_state.last_audio = None
-            st.session_state.audio_key += 1
-            st.info("새 회의록을 적용했습니다. 이전 회의의 대화는 초기화했습니다.")
-    if st.session_state.meeting_name:
-        st.success("적용된 회의록: " + st.session_state.meeting_name)
-        with st.expander("회의록 내용 확인"):
+                    try:
+                        text = data.decode("utf-8-sig")
+                    except UnicodeDecodeError:
+                        text = data.decode("cp949")
+                    if not text.strip():
+                        raise ValueError("빈 파일")
+                    st.session_state.meeting_text = text
+                    st.session_state.meeting_id = file_id
+                    st.session_state.meeting_name = uploaded_file.name
+                    # 파일이 바뀌어도 기존 대화는 유지
+                except (UnicodeDecodeError, ValueError):
+                    st.error("내용을 읽을 수 없습니다. UTF-8 텍스트 파일을 올려주세요.")
+        if st.session_state.meeting_text:
             st.text(st.session_state.meeting_text)
-    else:
-        st.info("회의 관련 질문은 회의록을 먼저 첨부해주세요.")
-    with st.form("task_form"):
-        audio_value = st.audio_input("음성으로 요청해주세요", key=f"audio_{st.session_state.audio_key}")
-        submit = st.form_submit_button("실행", use_container_width=True)
-    st.caption('예: “회의 내용을 요약하고, 나에게 배정된 업무를 알려줘.”')
+with voice_col:
+    with st.popover("🎙️ 음성", use_container_width=True):
+        with st.form("voice_form"):
+            recording = st.audio_input("음성으로 요청해주세요")
+            submit = st.form_submit_button("실행", use_container_width=True)
+with chat_col:
+    chat_input = st.chat_input("에이블에게 메시지를 보내세요…")
+st.caption("현재 참고 파일: " + (st.session_state.meeting_name or "없음"))
 
-
-with right:
-    st.subheader("에이블과의 대화")
+# 기록을 먼저 출력해 처리 중에도 지난 대화 확인 가능
+with conversation:
     if not st.session_state.messages:
-        st.info("안녕하세요, 김 대리님. 채팅이나 음성으로 요청해주세요.")
+        st.info("안녕하세요, 김 대리님. 무엇을 도와드릴까요?")
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-    new_user = st.empty()
-    new_answer = st.empty()
-    chat_input = st.chat_input("에이블에게 메시지를 보내세요…", key="chat_input")
 
-
-# 채팅 전송 또는 음성 실행 시 같은 대화 처리 사용
-new_audio = False
 question = chat_input.strip() if chat_input else ""
-is_voice = submit and not question
+new_audio = False
 if question or submit:
-    if is_voice and audio_value is None:
-        st.warning("음성을 녹음해주세요.")
-    elif not os.getenv("OPENAI_API_KEY"):
-        st.error("OpenAI API 키가 없습니다. Streamlit Secrets 설정을 확인해주세요.")
-    else:
-        audio_data = audio_value.getvalue() if is_voice else None
-        audio_id = hashlib.sha256(audio_data).hexdigest() if is_voice else None
-        if is_voice and audio_id == st.session_state.last_audio:
-            st.warning("이미 처리한 녹음입니다. 새로 녹음한 뒤 실행해주세요.")
-        else:
-            client = OpenAI(timeout=60, max_retries=0)
+    try:
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError("Streamlit Secrets의 OPENAI_API_KEY를 확인해주세요.")
+        client = OpenAI(timeout=60, max_retries=0)
+        with st.spinner("답변 준비 중..."):
+            if not question:
+                if recording is None:
+                    raise ValueError("음성을 녹음해주세요.")
+                audio = recording.getvalue()
+                audio_id = hashlib.sha256(audio).hexdigest()
+                if audio_id == st.session_state.last_audio:
+                    raise ValueError("이미 처리한 녹음입니다. 새로 녹음해주세요.")
+                question = client.audio.transcriptions.create(
+                    model="whisper-1", file=("audio.wav", audio, "audio/wav")
+                ).text.strip()
+                if not question:
+                    raise ValueError("음성을 인식하지 못했습니다. 다시 녹음해주세요.")
+                st.session_state.last_audio = audio_id
             st.session_state.reply_audio = None
-            st.session_state.audio_notice = ""
-            st.session_state.mail_results = []
+            st.session_state.messages.append({"role": "user", "content": question})
+            with conversation:
+                with st.chat_message("user"):
+                    st.write(question)  # STT 결과도 LLM 호출 전에 표시
+            answer, mail_results = get_answer(client, st.session_state.messages, st.session_state.meeting_text)
+            # 발송 결과도 답변에 남겨 다음 실행에서도 확인 가능
+            for result in mail_results:
+                answer += "\n\n" + ("이메일 발송 완료: " + result["to"]
+                                    if result["status"] == "success" else result["error"])
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+            with conversation:
+                with st.chat_message("assistant"):
+                    st.markdown(answer)
             try:
-                with st.spinner("답변 준비 중..."):
-                    if is_voice:
-                        transcript = client.audio.transcriptions.create(
-                            model="whisper-1", file=("audio.wav", audio_data, "audio/wav")
-                        )
-                        question = transcript.text.strip()
-                    if not question:
-                        raise ValueError("음성을 인식하지 못했습니다. 다시 녹음해주세요.")
-                    # 인식 결과는 LLM 호출 전에 출력
-                    with new_user.container():
-                        if is_voice:
-                            st.caption("음성 인식 결과")
-                        with st.chat_message("user"):
-                            st.write(question)
-                    if is_voice:
-                        st.session_state.last_audio = audio_id
-                    messages = st.session_state.messages + [{"role": "user", "content": question}]
-                    answer, mail_results = get_answer(client, messages, st.session_state.meeting_text)
-                    st.session_state.messages = (messages + [{"role": "assistant", "content": answer}])[-10:]
-                    st.session_state.last_reply = answer
-                    st.session_state.mail_results = mail_results
-                    with new_answer.container():
-                        with st.chat_message("assistant"):
-                            st.markdown(answer)
-                    # 텍스트 답변은 유지하고 음성 변환 오류는 별도로 표시
-                    try:
-                        st.session_state.reply_audio = make_speech(client, answer)
-                        new_audio = True
-                    except Exception:
-                        st.session_state.audio_notice = "답변은 생성했지만 음성 변환에 실패했습니다. 아래 버튼으로 다시 시도해주세요."
-            except ValueError as e:
-                st.error(str(e))
-            except Exception:
-                st.error("요청 처리 중 오류가 발생했습니다. API 키·사용 한도·연결 상태를 확인해주세요. 메일 요청이었다면 재요청 전에 보낸메일함도 확인해주세요.")
-
-with right:
-    for result in st.session_state.mail_results:
-        if result["status"] == "success":
-            st.success("이메일 발송 완료: " + result["to"])
-        else:
-            st.warning(result["error"])
-    if st.session_state.audio_notice:
-        st.warning(st.session_state.audio_notice)
-        if st.button("음성 답변 다시 만들기"):
-            try:
-                with st.spinner("음성 답변을 만들고 있습니다..."):
-                    st.session_state.reply_audio = make_speech(OpenAI(timeout=60, max_retries=0), st.session_state.last_reply)
-                st.session_state.audio_notice = ""
+                st.session_state.reply_audio = make_speech(client, answer)
                 new_audio = True
             except Exception:
-                st.error("음성 변환에 실패했습니다. 잠시 후 다시 시도해주세요.")
-    if st.session_state.reply_audio:
-        st.audio(st.session_state.reply_audio, format="audio/wav", autoplay=new_audio)
-        st.caption("자동 재생이 차단되면 재생 버튼을 눌러주세요.")
+                st.warning("글 답변은 생성했지만 음성 변환에 실패했습니다.")
+    except ValueError as error:
+        st.warning(str(error))
+    except Exception:
+        st.error("요청 처리에 실패했습니다. API 설정과 연결 상태를 확인해주세요. 메일 요청은 보낸메일함 확인 후 다시 시도해주세요.")
+
+if st.session_state.reply_audio:
+    st.audio(st.session_state.reply_audio, format="audio/wav", autoplay=new_audio)
