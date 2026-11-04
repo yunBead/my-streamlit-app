@@ -987,7 +987,6 @@ with st.sidebar:
     with st.expander("업무 생성·수정", expanded=not tasks):
         if file_id:
             st.caption("추출 대상: " + st.session_state.meeting_name)
-            st.text_input("회의 날짜 (YYYY-MM-DD, 모르면 빈칸)", key="meeting_date_" + file_id)
 
         choices = [None] + [(t["_file"], t["번호"]) for t in ordered]
         labels = {(t["_file"], t["번호"]): t["업무"] + " · " + t["_source"] for t in ordered}
@@ -1013,6 +1012,8 @@ with st.sidebar:
             status = st.radio("진행 상태", statuses,
                               index=statuses.index(current["상태"]) if current else 0,
                               horizontal=True)
+            if file_id:
+                st.text_input("회의 날짜 (YYYY-MM-DD, 모르면 빈칸)", key="meeting_date_" + file_id)
             deadline = st.text_input("마감일 (YYYY-MM-DD, 미정이면 빈칸)",
                                      value=(current["마감일"] or "") if current else "")
             generate = st.form_submit_button(
@@ -1115,7 +1116,7 @@ with document_tab:
         reference.info("참고 파일: " + source_name + " · 저장된 원본 회의록")
         source_tasks = [t for t in tasks if t["_file"] == source_id]
         if source_tasks:
-            task_id = st.radio("작성할 업무", [t["번호"] for t in recommend_priority(source_tasks)],
+            task_id = st.selectbox("작성할 업무", [t["번호"] for t in recommend_priority(source_tasks)],
                                format_func=lambda number: next(t["업무"] for t in source_tasks if t["번호"] == number),
                                key="report_task_" + source_id)
             document_type = st.radio("초안 종류", ["보고서", "업무 계획서", "회의 준비 자료"], horizontal=True)
