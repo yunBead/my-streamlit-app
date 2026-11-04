@@ -113,7 +113,7 @@ def get_answer(client, messages, meeting_text):
                 if not all(isinstance(value, str) for value in args.values()):
                     raise ValueError("메일 내용은 문자열이어야 합니다.")
                 if args["to"].lower() not in addresses:
-                    result = {"status": "failed", "error": "수신자 주소를 음성으로 직접 알려주세요. 인식된 주소도 확인해주세요."}
+                    result = {"status": "failed", "error": "수신자 주소를 채팅이나 음성으로 직접 알려주세요. 입력된 주소도 확인해주세요."}
                 elif mail_results:
                     result = {"status": "failed", "error": "한 번의 요청에서는 메일 한 통만 발송합니다."}
                 else:
@@ -185,8 +185,8 @@ with st.sidebar:
     st.markdown("회의 요약 · 담당 업무 확인 · 이메일 발송")
     st.divider()
     st.write("**사용 방법**")
-    st.write("1. 회의록을 첨부합니다.\n2. 마이크를 눌러 요청합니다.\n3. 실행을 누르고 답변을 확인합니다.")
-    st.caption("메일을 보내려면 수신자 주소와 발송 요청을 함께 말씀해주세요.")
+    st.write("1. 회의록을 첨부합니다.\n2. 채팅으로 입력하거나 음성을 녹음합니다.\n3. 채팅을 전송하거나 음성 실행을 누릅니다.")
+    st.caption("메일을 보내려면 수신자 주소와 발송 요청을 채팅이나 음성으로 알려주세요.")
     st.caption("답변 음성은 AI가 생성합니다. 최근 대화 10개 메시지(약 5회 문답)를 보관합니다.")
     if st.button("대화 초기화", use_container_width=True):
         for key, value in defaults.items():
@@ -196,7 +196,7 @@ with st.sidebar:
         st.rerun()
 
 st.title("김 대리님, 무엇을 도와드릴까요?")
-st.caption("회의록을 바탕으로 내용을 정리하고, 음성으로 요청하신 업무를 도와드립니다.")
+st.caption("회의록을 바탕으로 내용을 정리하고, 채팅과 음성으로 요청하신 업무를 도와드립니다.")
 left, right = st.columns([1, 2], gap="large")
 with left:
     st.subheader("업무 요청")
@@ -241,25 +241,28 @@ with left:
 with right:
     st.subheader("에이블과의 대화")
     if not st.session_state.messages:
-        st.info("안녕하세요, 김 대리님. 회의록을 첨부하고 음성으로 요청해주세요.")
+        st.info("안녕하세요, 김 대리님. 채팅이나 음성으로 요청해주세요.")
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     new_user = st.empty()
     new_answer = st.empty()
+    chat_input = st.chat_input("에이블에게 메시지를 보내세요…", key="chat_input")
 
 
-# 실행 버튼을 누른 경우에만 API 호출
+# 채팅 전송 또는 음성 실행 시 같은 대화 처리 사용
 new_audio = False
-if submit:
-    if audio_value is None:
+question = chat_input.strip() if chat_input else ""
+is_voice = submit and not question
+if question or submit:
+    if is_voice and audio_value is None:
         st.warning("음성을 녹음해주세요.")
     elif not os.getenv("OPENAI_API_KEY"):
         st.error("OpenAI API 키가 없습니다. Streamlit Secrets 설정을 확인해주세요.")
     else:
-        audio_data = audio_value.getvalue()
-        audio_id = hashlib.sha256(audio_data).hexdigest()
-        if audio_id == st.session_state.last_audio:
+        audio_data = audio_value.getvalue() if is_voice else None
+        audio_id = hashlib.sha256(audio_data).hexdigest() if is_voice else None
+        if is_voice and audio_id == st.session_state.last_audio:
             st.warning("이미 처리한 녹음입니다. 새로 녹음한 뒤 실행해주세요.")
         else:
             client = OpenAI(timeout=60, max_retries=0)
@@ -268,18 +271,21 @@ if submit:
             st.session_state.mail_results = []
             try:
                 with st.spinner("답변 준비 중..."):
-                    transcript = client.audio.transcriptions.create(
-                        model="whisper-1", file=("audio.wav", audio_data, "audio/wav")
-                    )
-                    question = transcript.text.strip()
+                    if is_voice:
+                        transcript = client.audio.transcriptions.create(
+                            model="whisper-1", file=("audio.wav", audio_data, "audio/wav")
+                        )
+                        question = transcript.text.strip()
                     if not question:
                         raise ValueError("음성을 인식하지 못했습니다. 다시 녹음해주세요.")
                     # 인식 결과는 LLM 호출 전에 출력
                     with new_user.container():
-                        st.caption("음성 인식 결과")
+                        if is_voice:
+                            st.caption("음성 인식 결과")
                         with st.chat_message("user"):
                             st.write(question)
-                    st.session_state.last_audio = audio_id
+                    if is_voice:
+                        st.session_state.last_audio = audio_id
                     messages = st.session_state.messages + [{"role": "user", "content": question}]
                     answer, mail_results = get_answer(client, messages, st.session_state.meeting_text)
                     st.session_state.messages = (messages + [{"role": "assistant", "content": answer}])[-10:]
