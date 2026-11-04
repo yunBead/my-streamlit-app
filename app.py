@@ -1116,9 +1116,10 @@ with document_tab:
         reference.info("참고 파일: " + source_name + " · 저장된 원본 회의록")
         source_tasks = [t for t in tasks if t["_file"] == source_id]
         if source_tasks:
-            task_id = st.selectbox("작성할 업무", [t["번호"] for t in recommend_priority(source_tasks)],
-                               format_func=lambda number: next(t["업무"] for t in source_tasks if t["번호"] == number),
-                               key="report_task_" + source_id)
+            with st.expander("작성할 업무", expanded=False):
+                task_id = st.radio("작성할 업무", [t["번호"] for t in recommend_priority(source_tasks)],
+                                   format_func=lambda number: next(t["업무"] for t in source_tasks if t["번호"] == number),
+                                   key="report_task_" + source_id)
             document_type = st.radio("초안 종류", ["보고서", "업무 계획서", "회의 준비 자료"], horizontal=True)
             if st.button("선택 업무의 문서 초안 작성"):
                 if not source.get("text"):
