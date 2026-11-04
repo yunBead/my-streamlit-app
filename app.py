@@ -452,8 +452,8 @@ with st.sidebar:
     if robot.exists():
         st.image(str(robot), width=160)
     st.title("AIVLE")
-    st.caption("업무 관리")
-    st.write("회의 분석부터 업무 추적, 문서 작성과 이메일 발송까지 지원하는 AI 업무 비서입니다.")
+    st.caption("음성인식 AI 개인비서")
+    st.write("회의 분석·업무 관리·문서 작성·이메일 발송  AI 업무 비서")
     st.caption("대화 기록은 스크롤로 조회할 수 있으며, 답변에는 최근 10회 문답의 맥락이 반영됩니다.")
     st.caption("음성 안내는 AI 음성 합성으로 제공됩니다.")
     st.caption("대화 초기화 시 대화·첨부파일·메일 예약이 삭제됩니다. 저장된 업무와 문서 초안은 현재 세션에 유지되며, 초안 조회·작성에는 해당 회의록 첨부가 필요합니다.")
