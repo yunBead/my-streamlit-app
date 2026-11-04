@@ -813,11 +813,6 @@ with st.sidebar:
                     st.error(str(error))
                 except Exception:
                     st.error("업무 추출에 실패했습니다. 회의 날짜 형식과 API 설정을 확인해주세요.")
-            st.caption("채팅과 같은 추출 결과를 사용합니다. 회의 날짜 변경 후 생성하면 마감일도 갱신됩니다. 직접 수정한 마감일은 유지합니다.")
-            st.caption("날짜가 불명확하면 원문의 기한을 표시하며, 임의의 연도로 계산하지 않습니다.")
-        else:
-            st.caption("새 업무를 추가하려면 회의록을 첨부해주세요.")
-        st.caption("우선순위는 한국 시간 기준 마감일로 추천합니다.")
 
     if tasks:
         with st.expander("업무 수정·배정 근거"):
@@ -840,7 +835,6 @@ with st.sidebar:
                         st.rerun()
                     except ValueError:
                         st.error("업무명과 날짜 형식을 확인해주세요.")
-    st.caption("첨부 삭제·대화 초기화 후에도 업무는 유지됩니다. 삭제는 각 업무의 ✕ 버튼으로 합니다. 새 접속 시에는 사라질 수 있습니다.")
 
 with document_tab:
     st.subheader("문서·보고서 초안 작성")
