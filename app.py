@@ -271,8 +271,52 @@ def make_document_draft(client, task, meeting_text, document_type):
 
 
 # 메일은 초안만 준비하고, 사용자가 화면에서 승인한 뒤에 발송
+def plain_text(text):
+    # 글의 내용은 남기고 마크다운 서식 기호만 정리
+    text = str(text).replace("\r\n", "\n")
+    text = re.sub(r"(?m)^\s*(`{3,}|~{3,}).*$", "", text)
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+    text = re.sub(r"(?m)^ {0,3}#{1,6}\s+(.+?)(?:\s+#+)?$", r"\1", text)
+    text = re.sub(r"(?m)^\s{0,3}>\s?", "", text)
+    text = re.sub(r"(?m)^\s*(?:[-*_]\s*){3,}$", "", text)
+    text = re.sub(r"(?m)^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$", "", text)
+    text = re.sub(r"(?m)^(\s*)[-+*]\s+", r"\1• ", text)
+    text = re.sub(r"(\*\*|__|~~)(.+?)\1", r"\2", text, flags=re.S)
+    text = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"\1", text)
+    text = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"\1", text)
+    text = re.sub(r"`+([^`]+)`+", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def all_saved_tasks():
+    result = []
+    for source_id, tasks in st.session_state.task_lists.items():
+        source = st.session_state.task_sources.get(source_id, {})
+        name = source.get("name") or source_id[:-64] or "이전 회의록"
+        result.extend(dict(t, _file=source_id, _source=name) for t in tasks)
+    return result
+
+
+def add_saved_tasks(source_id, new_tasks):
+    saved = st.session_state.task_lists.setdefault(source_id, [])
+    st.session_state.task_sources[source_id] = {"name": st.session_state.meeting_name, "text": st.session_state.meeting_text}
+    normalize = lambda name: re.sub(r"\s+", "", name)
+    known = {normalize(t.get("_original_name", t["업무"])) for t in saved}
+    number = max((t["번호"] for t in saved), default=0)
+    for task in new_tasks:
+        if normalize(task["업무"]) not in known:
+            number += 1
+            task = task.copy()
+            task["번호"] = number
+            task["_original_name"] = task["업무"]
+            saved.append(task)
+            known.add(normalize(task["업무"]))
+
+
 def new_email(to="", subject="", body=""):
-    return {"id": uuid.uuid4().hex, "to": to, "subject": subject, "body": body,
+    return {"id": uuid.uuid4().hex, "to": to, "subject": plain_text(subject), "body": plain_text(body),
             "status": "승인 대기", "send_at": None, "result": "",
             "suggested_at": now_kst() + timedelta(minutes=5)}
 
@@ -285,6 +329,7 @@ def prepare_email(to, subject, body):
 def approve_email(mail, to, subject, body, send_at=None):
     if mail["status"] != "승인 대기":
         raise ValueError("이미 처리된 메일입니다.")
+    subject, body = plain_text(subject), plain_text(body)
     if (not re.fullmatch(r"[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+", to)
             or not subject.strip() or not body.strip() or "\n" in subject or "\r" in subject):
         raise ValueError("수신자, 제목, 본문을 확인해주세요.")
@@ -298,7 +343,7 @@ def approve_email(mail, to, subject, body, send_at=None):
 
 def deliver_email(mail):
     mail["status"] = "발송 중"  # 중복 실행·자동 재시도 방지
-    result = send_email(mail["to"], mail["subject"], mail["body"])
+    result = send_email(mail["to"], plain_text(mail["subject"]), plain_text(mail["body"]))
     mail["status"] = {"success": "발송 완료", "failed": "실패", "unknown": "확인 필요"}[result["status"]]
     mail["result"] = "발송 완료" if result["status"] == "success" else result["error"]
 
@@ -315,8 +360,8 @@ def show_email_form(mail, manual=False):
     suggested = mail.setdefault("suggested_at", now_kst() + timedelta(minutes=5))
     with st.form("mail_" + key):
         to = st.text_input("수신자 이메일", value=mail["to"], key="to_" + key)
-        subject = st.text_input("제목", value=mail["subject"], key="subject_" + key)
-        body = st.text_area("본문 (발송 전 수정 가능)", value=mail["body"], height=220, key="body_" + key)
+        subject = st.text_input("제목", value=plain_text(mail["subject"]), key="subject_" + key)
+        body = st.text_area("본문 (발송 전 수정 가능)", value=plain_text(mail["body"]), height=220, key="body_" + key)
         day_col, time_col = st.columns(2)
         with day_col:
             send_date = st.date_input("예약 날짜 · 한국 시간", value=suggested.date(), key="date_" + key)
@@ -358,17 +403,21 @@ def show_mail_status():
             if mail["send_at"]:
                 st.caption("예약: " + mail["send_at"].strftime("%Y-%m-%d %H:%M") + " (한국 시간)")
             if mail["result"]:
-                st.write(mail["result"])
+                st.text(str(mail["result"]))
             if mail["status"] == "예약" and st.button("예약 취소", key="cancel_" + mail["id"]):
                 mail["status"] = "취소"
                 st.rerun()
 
 
 defaults = {"messages": [], "meeting_text": "", "meeting_id": "", "meeting_name": "",
-            "last_audio": None, "reply_audio": None, "input_version": 0, "task_lists": {}, "reports": {}, "mail_drafts": [], "manual_mail": None}
+            "last_audio": None, "reply_audio": None, "input_version": 0, "task_lists": {}, "task_sources": {}, "reports": {}, "mail_drafts": [], "manual_mail": None}
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+if st.session_state.meeting_id and st.session_state.meeting_text:
+    st.session_state.task_sources[st.session_state.meeting_id] = {
+        "name": st.session_state.meeting_name, "text": st.session_state.meeting_text}
 
 with st.sidebar:
     robot = Path(__file__).resolve().parent / "Docs" / "aivle_robot.png"
@@ -379,11 +428,13 @@ with st.sidebar:
     st.write("회의 요약 · 담당 업무 확인 · 이메일 발송")
     st.caption("전체 대화를 스크롤로 확인할 수 있습니다. AI는 최근 10회 문답을 참고합니다.")
     st.caption("음성 답변은 AI가 생성합니다.")
-    st.caption("대화 초기화 시 업무·초안·예약도 함께 삭제됩니다.")
+    st.caption("대화 초기화 시 첨부·메일 예약은 삭제되고 내 업무와 문서 초안은 유지됩니다.")
+    st.caption("화면 버전: 업무유지·메일정리")
     if st.button("대화 초기화"):
         version = st.session_state.input_version + 1
         for key, value in defaults.items():
-            st.session_state[key] = value
+            if key not in ["task_lists", "task_sources", "reports"]:
+                st.session_state[key] = value
         # 위젯 키도 변경해 첨부파일과 녹음이 다시 적용되지 않게 함
         st.session_state.input_version = version
         st.rerun()
@@ -498,86 +549,116 @@ with chat_tab:
     if st.session_state.reply_audio:
         st.audio(st.session_state.reply_audio, format="audio/wav", autoplay=new_audio)
 
-# 업무 목록은 사이드바 상단부터 우선순위 순서로 표시
+if st.session_state.meeting_id and st.session_state.meeting_text:
+    st.session_state.task_sources[st.session_state.meeting_id] = {
+        "name": st.session_state.meeting_name, "text": st.session_state.meeting_text}
+
+# 파일·대화와 분리해 저장한 모든 업무를 표시
 with st.sidebar:
     st.divider()
     st.subheader("내 업무")
-    file_id = st.session_state.meeting_id
-    tasks = st.session_state.task_lists.get(file_id, [])
-    extracted = file_id in st.session_state.task_lists
-    if not file_id:
-        st.info("회의록을 먼저 첨부해주세요.")
-    else:
-        st.caption("기준: " + st.session_state.meeting_name)
-        for task in recommend_priority(tasks):
-            color = {"높음": "🔴", "보통": "🟠", "낮음": "🟢", "확인 필요": "⚪", "완료": "✅"}[task["우선순위"]]
-            with st.container(border=True):
+    tasks = all_saved_tasks()
+    ordered = recommend_priority(tasks)
+    for task in ordered:
+        color = {"높음": "🔴", "보통": "🟠", "낮음": "🟢", "확인 필요": "⚪", "완료": "✅"}[task["우선순위"]]
+        with st.container(border=True):
+            title_col, delete_col = st.columns([5, 1])
+            with title_col:
                 st.markdown(f"{color} **{task['업무']}**")
-                st.caption(f"{task['우선순위']} · {task['상태']} · 마감: {task['마감일'] or '미정'}")
-        if extracted and not tasks:
-            st.info("확인된 김 대리의 확정 배정 업무가 없습니다.")
-        with st.expander("업무 생성·마감 알림", expanded=not extracted):
+            with delete_col:
+                if st.button("✕", key=f"delete_{task['_file']}_{task['번호']}", help="이 업무 삭제"):
+                    source_tasks = st.session_state.task_lists[task["_file"]]
+                    source_tasks[:] = [t for t in source_tasks if t["번호"] != task["번호"]]
+                    st.rerun()
+            st.caption(f"{task['우선순위']} · {task['상태']} · 마감: {task['마감일'] or '미정'}")
+            st.caption("출처: " + task["_source"])
+    if not tasks:
+        st.info("저장된 업무가 없습니다. 회의록에서 업무를 생성해주세요.")
+
+    file_id = st.session_state.meeting_id
+    with st.expander("업무 생성·마감 알림", expanded=not tasks):
+        if file_id:
+            st.caption("추출 대상: " + st.session_state.meeting_name)
             meeting_date = st.text_input("회의 날짜 (YYYY-MM-DD, 모르면 빈칸)", key="meeting_date_" + file_id)
-            if extracted:
-                st.caption("다시 생성하면 기존 업무 수정 내용이 초기화됩니다.")
-            if st.button("업무 다시 생성" if extracted else "업무 목록 자동 생성"):
+            if st.button("업무 목록 생성·추가"):
                 try:
                     with st.spinner("담당 업무를 찾고 있습니다..."):
                         result = make_task_list(OpenAI(timeout=60, max_retries=0), st.session_state.meeting_text, meeting_date.strip())
-                    st.session_state.task_lists[file_id] = result
-                    st.session_state.reports.pop(file_id, None)
-                    st.rerun()
+                    add_saved_tasks(file_id, result)
+                    if not result:
+                        st.info("이번 회의록에서 확인된 배정 업무가 없습니다. 기존 업무는 유지됩니다.")
+                    else:
+                        st.rerun()
                 except Exception:
                     st.error("업무 추출에 실패했습니다. 회의 날짜 형식과 API 설정을 확인해주세요.")
-            for notice in check_deadlines(tasks):
-                st.warning(notice)
-            st.caption("우선순위는 한국 시간 기준 마감일로 추천합니다.")
-        if tasks:
-            with st.expander("업무 수정·배정 근거"):
-                selected_id = st.radio("수정할 업무", [t["번호"] for t in recommend_priority(tasks)],
-                                       format_func=lambda n: next(t["업무"] for t in tasks if t["번호"] == n),
-                                       key="edit_choice_" + file_id)
-                selected = next(t for t in tasks if t["번호"] == selected_id)
-                st.caption("배정 근거: " + selected["배정근거"])
-                with st.form(f"edit_{file_id}_{selected_id}"):
-                    name = st.text_input("업무명", value=selected["업무"])
-                    status = st.radio("진행 상태", ["대기", "진행 중", "완료"],
-                                      index=["대기", "진행 중", "완료"].index(selected["상태"]), horizontal=True)
-                    deadline = st.text_input("마감일 (YYYY-MM-DD, 미정이면 빈칸)", value=selected["마감일"] or "")
-                    if st.form_submit_button("업무 수정 저장"):
-                        try:
-                            update_task(tasks, selected_id, name, status, deadline.strip())
-                            st.rerun()
-                        except ValueError:
-                            st.error("업무명과 날짜 형식을 확인해주세요.")
-    st.caption("업무 목록과 수정 내용은 현재 접속 세션에 보관됩니다.")
+            st.caption("기존 업무는 유지하고 새로운 업무만 추가합니다.")
+        else:
+            st.caption("새 업무를 추가하려면 회의록을 첨부해주세요.")
+        for notice in check_deadlines(tasks):
+            st.warning(notice)
+        st.caption("우선순위는 한국 시간 기준 마감일로 추천합니다.")
+
+    if tasks:
+        with st.expander("업무 수정·배정 근거"):
+            choices = [(t["_file"], t["번호"]) for t in ordered]
+            selected = st.radio("수정할 업무", choices,
+                                format_func=lambda choice: next(t["업무"] + " · " + t["_source"] for t in tasks if (t["_file"], t["번호"]) == choice),
+                                key="saved_task_choice")
+            source_id, task_id = selected
+            task = next(t for t in st.session_state.task_lists[source_id] if t["번호"] == task_id)
+            st.caption("배정 근거: " + task["배정근거"])
+            with st.form(f"edit_{source_id}_{task_id}"):
+                name = st.text_input("업무명", value=task["업무"])
+                status = st.radio("진행 상태", ["대기", "진행 중", "완료"], index=["대기", "진행 중", "완료"].index(task["상태"]), horizontal=True)
+                deadline = st.text_input("마감일 (YYYY-MM-DD, 미정이면 빈칸)", value=task["마감일"] or "")
+                if st.form_submit_button("업무 수정 저장"):
+                    try:
+                        task.setdefault("_original_name", task["업무"])
+                        update_task(st.session_state.task_lists[source_id], task_id, name, status, deadline.strip())
+                        st.rerun()
+                    except ValueError:
+                        st.error("업무명과 날짜 형식을 확인해주세요.")
+    st.caption("첨부 삭제·대화 초기화 후에도 업무는 유지됩니다. 삭제는 각 업무의 ✕ 버튼으로 합니다. 새 접속 시에는 사라질 수 있습니다.")
 
 with document_tab:
     st.subheader("문서·보고서 초안 작성")
-    file_id = st.session_state.meeting_id
-    tasks = st.session_state.task_lists.get(file_id, [])
+    tasks = all_saved_tasks()
     if not tasks:
-        st.info("회의록을 첨부하고 사이드바에서 업무 목록을 먼저 생성해주세요.")
+        st.info("사이드바에서 업무 목록을 먼저 생성해주세요.")
     else:
-        st.caption("기준 회의록: " + st.session_state.meeting_name)
-        task_id = st.radio("작성할 업무", [t["번호"] for t in recommend_priority(tasks)],
-                           format_func=lambda n: next(t["업무"] for t in tasks if t["번호"] == n), key="report_choice_" + file_id)
+        selected = st.radio("작성할 업무", [(t["_file"], t["번호"]) for t in recommend_priority(tasks)],
+                            format_func=lambda choice: next(t["업무"] + " · " + t["_source"] for t in tasks if (t["_file"], t["번호"]) == choice),
+                            key="saved_report_choice")
+        source_id, task_id = selected
+        source = st.session_state.task_sources.get(source_id, {})
         document_type = st.radio("초안 종류", ["보고서", "업무 계획서", "회의 준비 자료"], horizontal=True)
         if st.button("선택 업무의 문서 초안 작성"):
-            try:
-                with st.spinner("초안을 작성하고 있습니다..."):
-                    task = next(t for t in tasks if t["번호"] == task_id)
-                    draft = make_document_draft(OpenAI(timeout=60, max_retries=0), task, st.session_state.meeting_text, document_type)
-                st.session_state.reports[file_id] = {"업무": task["업무"], "내용": draft}
-            except Exception:
-                st.error("초안 작성에 실패했습니다. API 설정을 확인해주세요.")
-    if file_id in st.session_state.reports:
-        report = st.session_state.reports[file_id]
-        st.write("작성 대상: " + report["업무"])
-        st.markdown(report["내용"])
-        st.download_button("초안 내려받기", report["내용"], file_name="업무_초안.txt", mime="text/plain")
+            if not source.get("text"):
+                st.warning("이 업무의 원본 회의록을 다시 첨부한 뒤 작성해주세요.")
+            else:
+                try:
+                    with st.spinner("초안을 작성하고 있습니다..."):
+                        task = next(t for t in tasks if (t["_file"], t["번호"]) == selected)
+                        draft = make_document_draft(OpenAI(timeout=60, max_retries=0), task, source["text"], document_type)
+                    st.session_state.reports[source_id] = {"업무": task["업무"], "내용": draft}
+                except Exception:
+                    st.error("초안 작성에 실패했습니다. API 설정을 확인해주세요.")
+        if source_id in st.session_state.reports:
+            report = st.session_state.reports[source_id]
+            st.write("작성 대상: " + report["업무"])
+            st.markdown(report["내용"])
+            st.download_button("초안 내려받기", plain_text(report["내용"]), file_name="업무_초안.txt", mime="text/plain")
+
 
 with mail_tab:
+    st.markdown("**채팅에서 준비한 이메일 · 승인 대기**")
+    pending = [m for m in st.session_state.mail_drafts if m["status"] == "승인 대기"]
+    for mail in pending:
+        with st.expander(plain_text(mail["subject"]) or "제목 없음", expanded=True):
+            show_email_form(mail)
+    if not pending:
+        st.caption("승인 대기 중인 이메일이 없습니다.")
+    st.divider()
     st.subheader("이메일 작성·예약")
     st.caption("채팅 요청 없이 직접 작성할 수 있습니다. 발송·예약 버튼을 누르는 것이 최종 승인입니다.")
     st.info("예약은 한국 시간 기준이며, 앱이 열린 동안 30초마다 확인합니다. 접속 종료·새로고침·대화 초기화 시 예약이 사라질 수 있습니다.")
@@ -596,19 +677,12 @@ with mail_tab:
             if not response.output_text.strip():
                 raise ValueError("요약 결과가 비었습니다.")
             st.session_state["subject_" + manual["id"]] = "회의 내용 요약 - " + st.session_state.meeting_name
-            st.session_state["body_" + manual["id"]] = response.output_text
+            st.session_state["body_" + manual["id"]] = plain_text(response.output_text)
         except Exception:
             st.error("회의 요약을 불러오지 못했습니다. 회의록과 API 설정을 확인해주세요.")
     st.markdown("**새 이메일 작성**")
     show_email_form(manual, manual=True)
 
-    pending = [m for m in st.session_state.mail_drafts if m["status"] == "승인 대기"]
-    if pending:
-        st.divider()
-        st.markdown("**채팅에서 준비한 이메일 · 승인 대기**")
-        for mail in pending:
-            with st.expander(mail["subject"] or "제목 없음", expanded=True):
-                show_email_form(mail)
     st.divider()
     st.markdown("**발송·예약 현황**")
     show_mail_status()
