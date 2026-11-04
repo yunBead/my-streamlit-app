@@ -10,7 +10,7 @@ from openai import OpenAI
 
 
 # 페이지 설정
-st.set_page_config(page_title="에이블 | 김 대리의 AI 개인비서", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="AIVLE | 업무 관리", page_icon="🤖", layout="wide")
 
 # 역할 지정
 sys_role = """
@@ -423,13 +423,12 @@ with st.sidebar:
     robot = Path(__file__).resolve().parent / "Docs" / "aivle_robot.png"
     if robot.exists():
         st.image(str(robot), width=160)
-    st.title("에이블")
-    st.caption("김 대리의 AI 개인비서")
-    st.write("회의 요약 · 담당 업무 확인 · 이메일 발송")
-    st.caption("전체 대화를 스크롤로 확인할 수 있습니다. AI는 최근 10회 문답을 참고합니다.")
-    st.caption("음성 답변은 AI가 생성합니다.")
-    st.caption("대화 초기화 시 첨부·메일 예약은 삭제되고 내 업무와 문서 초안은 유지됩니다.")
-    st.caption("화면 버전: 업무유지·메일정리")
+    st.title("AIVLE")
+    st.caption("업무 관리")
+    st.write("회의 분석부터 업무 추적, 문서 작성과 이메일 발송까지 지원하는 AI 업무 비서입니다.")
+    st.caption("대화 기록은 스크롤로 조회할 수 있으며, 답변에는 최근 10회 문답의 맥락이 반영됩니다.")
+    st.caption("음성 안내는 AI 음성 합성으로 제공됩니다.")
+    st.caption("대화 초기화 시 대화·첨부파일·메일 예약이 삭제됩니다. 저장된 업무와 문서 초안은 현재 세션에 유지되며, 초안 조회·작성에는 해당 회의록 첨부가 필요합니다.")
     if st.button("대화 초기화"):
         version = st.session_state.input_version + 1
         for key, value in defaults.items():
@@ -441,7 +440,6 @@ with st.sidebar:
 
 chat_tab, mail_tab, document_tab = st.tabs(["대화", "이메일", "문서·보고서"])
 with chat_tab:
-    st.title("김 대리님, 무엇을 도와드릴까요?")
     st.caption("채팅으로 입력하거나, 입력창 옆에서 회의록을 첨부하고 음성으로 요청하세요.")
     conversation = st.container(height=450, border=True)
     file_status = st.empty()
@@ -556,7 +554,7 @@ if st.session_state.meeting_id and st.session_state.meeting_text:
 # 파일·대화와 분리해 저장한 모든 업무를 표시
 with st.sidebar:
     st.divider()
-    st.subheader("내 업무")
+    st.subheader("업무관리 리스트")
     tasks = all_saved_tasks()
     ordered = recommend_priority(tasks)
     for task in ordered:
@@ -622,32 +620,36 @@ with st.sidebar:
 
 with document_tab:
     st.subheader("문서·보고서 초안 작성")
-    tasks = all_saved_tasks()
-    if not tasks:
-        st.info("사이드바에서 업무 목록을 먼저 생성해주세요.")
+    if not st.session_state.meeting_text:
+        st.info("첨부된 파일이 없습니다. 대화 탭에서 회의록을 첨부해주세요.")
     else:
-        selected = st.radio("작성할 업무", [(t["_file"], t["번호"]) for t in recommend_priority(tasks)],
-                            format_func=lambda choice: next(t["업무"] + " · " + t["_source"] for t in tasks if (t["_file"], t["번호"]) == choice),
-                            key="saved_report_choice")
-        source_id, task_id = selected
-        source = st.session_state.task_sources.get(source_id, {})
-        document_type = st.radio("초안 종류", ["보고서", "업무 계획서", "회의 준비 자료"], horizontal=True)
-        if st.button("선택 업무의 문서 초안 작성"):
-            if not source.get("text"):
-                st.warning("이 업무의 원본 회의록을 다시 첨부한 뒤 작성해주세요.")
-            else:
-                try:
-                    with st.spinner("초안을 작성하고 있습니다..."):
-                        task = next(t for t in tasks if (t["_file"], t["번호"]) == selected)
-                        draft = make_document_draft(OpenAI(timeout=60, max_retries=0), task, source["text"], document_type)
-                    st.session_state.reports[source_id] = {"업무": task["업무"], "내용": draft}
-                except Exception:
-                    st.error("초안 작성에 실패했습니다. API 설정을 확인해주세요.")
-        if source_id in st.session_state.reports:
-            report = st.session_state.reports[source_id]
-            st.write("작성 대상: " + report["업무"])
-            st.markdown(report["내용"])
-            st.download_button("초안 내려받기", plain_text(report["내용"]), file_name="업무_초안.txt", mime="text/plain")
+        st.caption("첨부 회의록: " + st.session_state.meeting_name)
+        tasks = [t for t in all_saved_tasks() if t["_file"] == st.session_state.meeting_id]
+        if not tasks:
+            st.info("현재 첨부한 회의록의 업무 목록을 사이드바에서 먼저 생성해주세요.")
+        else:
+            selected = st.radio("작성할 업무", [(t["_file"], t["번호"]) for t in recommend_priority(tasks)],
+                                format_func=lambda choice: next(t["업무"] + " · " + t["_source"] for t in tasks if (t["_file"], t["번호"]) == choice),
+                                key="saved_report_choice")
+            source_id, task_id = selected
+            source = st.session_state.task_sources.get(source_id, {})
+            document_type = st.radio("초안 종류", ["보고서", "업무 계획서", "회의 준비 자료"], horizontal=True)
+            if st.button("선택 업무의 문서 초안 작성"):
+                if not source.get("text"):
+                    st.warning("이 업무의 원본 회의록을 다시 첨부한 뒤 작성해주세요.")
+                else:
+                    try:
+                        with st.spinner("초안을 작성하고 있습니다..."):
+                            task = next(t for t in tasks if (t["_file"], t["번호"]) == selected)
+                            draft = make_document_draft(OpenAI(timeout=60, max_retries=0), task, source["text"], document_type)
+                        st.session_state.reports[source_id] = {"업무": task["업무"], "내용": draft}
+                    except Exception:
+                        st.error("초안 작성에 실패했습니다. API 설정을 확인해주세요.")
+            if source_id in st.session_state.reports:
+                report = st.session_state.reports[source_id]
+                st.write("작성 대상: " + report["업무"])
+                st.markdown(report["내용"])
+                st.download_button("초안 내려받기", plain_text(report["내용"]), file_name="업무_초안.txt", mime="text/plain")
 
 
 with mail_tab:
