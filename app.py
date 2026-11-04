@@ -613,11 +613,11 @@ with st.sidebar:
     robot = Path(__file__).resolve().parent / "Docs" / "aivle_robot.png"
     if robot.exists():
         st.image(str(robot), width=160)
-    logo = Path(__file__).resolve().parent / "Docs" / "logo.jpeg"
+    logo = Path(__file__).resolve().parent / "Docs" / "logo.png"
     if logo.exists():
-        st.image(str(logo), use_container_width=True)
+        st.image(str(logo), width=200)
     else:
-        st.caption("Docs/logo.jpeg 파일을 추가해주세요.")
+        st.caption("Docs/logo.png 파일을 추가해주세요.")
     st.caption("음성인식 AI 개인비서")
     if st.button("대화 초기화"):
         version = st.session_state.input_version + 1
