@@ -124,7 +124,9 @@ def get_answer(client, messages, meeting_text):
             "아래 확정 업무는 업무관리 리스트와 공유하는 검증된 추출 결과입니다. "
             "이번 회의의 업무 개수와 업무명은 이 결과를 기준으로 설명하고, 업무를 임의로 합치거나 더하지 마세요. "
             "기존 대화의 업무 분석과 다르면 이 최신 결과를 따르세요. "
-            "빈 목록이면 김 대리에게 배정된 업무가 없다고 답하세요. "
+            "추출 결과가 비어 있다는 이유만으로 업무가 없다고 단정하지 말고 원문을 재확인하세요. "
+            "마감일의 날짜 값이 null이어도 기한 원문이 있으면 그 표현을 그대로 안내하세요. "
+            "원문에 기한이 있는 업무를 마감일 미정이라고 바꾸지 마세요. "
             "저장 목록에서 사용자가 삭제·수정한 항목은 회의록의 원래 배정과 구분해 설명하세요.\n"
             + json.dumps({"확정 배정 업무": task_rows, "현재 저장된 업무": saved_rows}, ensure_ascii=False)})
         input_messages.append({"role": "user", "content": "[첨부 회의록: 분석 자료]\n" + meeting_text})
@@ -627,13 +629,20 @@ def make_task_list(client, meeting_text, meeting_date=""):
 - 다른 사람에게 배정된 일, 단순 아이디어, 검토 제안, 취소된 일은 제외합니다.
 - 배정근거와 담당자근거는 실제 원문에서 인용하세요. 불연속 인용은 문자열 배열로 반환하세요.
 - 담당자근거에는 김 대리의 호칭/화자 표기가 있는 원문 구간을 포함하세요.
-- 기한 원문은 해당 업무에 적용되는 날짜 표현을 그대로 인용하고, 없으면 '마감일 미정'입니다.
+- 기한 원문은 해당 업무에 적용되는 날짜 표현을 그대로 인용하세요.
+- 업무 배정 발언 앞뒤와 마지막 정리 발언까지 확인하세요. '세 업무 모두', '각자 맡은 일은',
+  '위 자료는 전부'처럼 적용 대상이 명확한 공통 기한을 해당 업무 각각에 연결하세요.
+- 이후 발언에서 변경된 기한은 최신 확정 발언을 적용하세요. 다른 업무의 기한은 가져오지 마세요.
+- '다음 주까지', '금요일까지'도 기한입니다. 기준일이 없어 날짜로 변환할 수 없어도 원문을 남기세요.
+- 기한 원문에는 설명이나 괄호로 계산한 날짜를 덧붙이지 마세요.
+- 기한근거에는 해당 업무에 그 기한이 적용됨을 보여 주는 원문 구간을 문자열 배열로 넣으세요.
+- 모든 관련 발언을 확인해도 기한 표현이 전혀 없을 때만 '마감일 미정'으로 작성하세요.
 - 업무가 없다는 판단은 회의록 끝까지 확인한 뒤에만 하세요.
 
 JSON만 반환하세요:
 {{"tasks":[{{"업무":"업무명","담당자":"김 대리","확정":true,
 "배정근거":["업무 요청 원문"],"담당자근거":["담당자 지정 또는 화자 원문"],
-"기한 원문":"마감일 미정","협업자":"없음"}}]}}
+"기한 원문":"마감일 미정","기한근거":[],"협업자":"없음"}}]}}
 """
 
     def ask(extra=""):
@@ -678,8 +687,23 @@ JSON만 반환하세요:
                 continue
             raw = str(row.get("기한 원문") or "마감일 미정").strip()
             if raw != "마감일 미정" and task_text_key(raw) not in original:
-                # 기한 인용 실패가 업무 자체를 삭제하지 않게 합니다.
                 raw = "마감일 미정"
+            # 원문으로 검증된 '해당 업무의 기한근거'에서만 날짜 표현을 복구합니다.
+            # 전체 회의록에서 임의의 날짜를 가져오지 않습니다.
+            if raw == "마감일 미정":
+                due_proof = evidence(row.get("기한근거"))
+                due_pattern = (
+                    r"\d{4}\s*[년./-]\s*\d{1,2}\s*[월./-]\s*\d{1,2}일?"
+                    r"|\d{1,2}\s*월\s*\d{1,2}\s*일(?:까지)?"
+                    r"|(?:(?:다다음|다음|이번|차)\s*주\s*)?[월화수목금토일]요일(?:까지)?"
+                    r"|(?:다다음|다음|이번|차)\s*주(?:까지|\s*내)"
+                    r"|(?:오늘|내일|모레|글피)(?:까지)?"
+                    r"|\d+\s*일\s*(?:후|뒤)"
+                    r"|(?:이번|다음)\s*달\s*\d{1,2}일(?:까지)?"
+                )
+                match = re.search(due_pattern, due_proof)
+                if match:
+                    raw = match.group(0)
             tasks.append({
                 "번호": len(tasks) + 1, "업무": name, "담당자": "김 대리",
                 "마감일": resolve_deadline(raw, meeting_date), "기한 원문": raw,
@@ -696,11 +720,21 @@ JSON만 반환하세요:
         "\n[재검토]\n초기 결과:\n" + json.dumps(initial, ensure_ascii=False)
         + "\n직접적인 부탁/지시, 화자 김 대리의 수락, 앞뒤 문장에 나뉜 배정을 다시 확인하세요."
           " 기존 업무명은 유지하고, 누락/잘못된 담당자/근거를 수정한 전체 tasks를 반환하세요."
+          " 각 업무의 기한을 앞뒤 문장과 최종 정리에서 다시 확인하고 공통 기한의 적용 대상도 검토하세요."
+          " 초기 결과에 기한이 있는데 미정으로 바꿀 때는 실제 취소/변경 발언이 있는지 확인하세요."
           ' 확실히 제외해야 하는 초기 업무는 제외업무 배열에 {"업무":"기존 업무명","근거":"취소 또는 다른 담당자 배정 원문"}으로 넣으세요.'
     )
     reviewed, review_rejected = validate(review_data["tasks"])
     merged = {task_text_key(t["업무"]): t for t in tasks}
-    merged.update({task_text_key(t["업무"]): t for t in reviewed})
+    for task in reviewed:
+        task_key = task_text_key(task["업무"])
+        previous = merged.get(task_key)
+        if (previous and previous.get("기한 원문") != "마감일 미정"
+                and task.get("기한 원문") == "마감일 미정"):
+            # 재검토의 단순 누락이 검증된 기한을 지우지 않게 합니다.
+            task["기한 원문"] = previous["기한 원문"]
+            task["마감일"] = previous["마감일"]
+        merged[task_key] = task
     excluded = review_data.get("제외업무", [])
     if isinstance(excluded, list):
         for item in excluded:
@@ -722,7 +756,7 @@ def shared_meeting_tasks(client, meeting_text, force=False):
     source_id = st.session_state.meeting_id
     entered = st.session_state.get("meeting_date_" + source_id, "").strip()
     meeting_date = meeting_reference_date(meeting_text, entered)
-    key = source_id + "|context-v4|" + meeting_date
+    key = source_id + "|context-v5|" + meeting_date
     if force or key not in st.session_state.task_analysis:
         rows = make_task_list(client, meeting_text, meeting_date)
         st.session_state.task_analysis[key] = rows
@@ -776,6 +810,22 @@ sys_role += """
 김 대리에게 직접 한 업무 요청('해주세요', '부탁드립니다')은 업무 배정입니다.
 수락 발언이 없다는 이유만으로 누락하지 마세요.
 검증된 확정 업무가 한 개라도 있으면 '배정된 업무가 없습니다'라고 답하지 않습니다.
+
+[최종 답변 검토]
+1. 회의 요약은 현재 첨부 회의록을 기준으로 핵심 내용, 확정 결정, 김 대리 담당 업무를 구분합니다.
+2. 업무마다 담당자, 기한, 협업 대상의 연결을 앞뒤 발언과 최종 정리에서 확인합니다.
+   제안·검토 중·확정·취소를 구분하고, 뒤에서 명확하게 바뀐 내용은 최신 발언을 따릅니다.
+3. 마감일이 null이라는 이유만으로 '마감일 미정'이라고 쓰지 않습니다.
+   '기한 원문'에 '다음 주까지' 같은 표현이 있으면 그대로 안내합니다.
+   날짜 변환이 불가능한 경우 '다음 주까지(회의 기준일 확인 필요)'처럼 구분합니다.
+4. 업무 목록의 기한이 미정이어도 관련 원문에 기한이 있는지 다시 확인합니다.
+   확인된 기한 표현을 우선 안내하고, 원문에 없는 날짜나 연도를 만들어내지 않습니다.
+5. 원문에 명확한 적용 대상이 없는 공통 기한을 임의로 모든 업무에 적용하지 않습니다.
+   변경·취소 근거 없이 확인된 기한을 지우지 않습니다.
+6. 수치·담당자·기한·업무 개수와 인용문이 원문 및 공유 업무 결과와 일치하는지 검토합니다.
+   불확실한 점은 '확인 필요'로 구분하고, 자료 부족과 '업무가 없음'을 혼동하지 않습니다.
+7. 이전 대화의 회의 내용, 현재 회의록, 사용자가 직접 수정한 목록을 구분합니다.
+   메일 승인·저장·발송 등 실행 결과는 실제 도구 결과가 있을 때만 완료로 안내합니다.
 """
 
 
@@ -795,7 +845,7 @@ with st.sidebar:
         st.image(str(robot), width=160)
     logo = Path(__file__).resolve().parent / "Docs" / "logo.png"
     if logo.exists():
-        st.image(str(logo), use_container_width=True)
+        st.image(str(logo), width=180)
     else:
         st.caption("Docs/logo.png 파일을 추가해주세요.")
     st.caption("음성인식 AI 개인비서")
@@ -933,6 +983,75 @@ with st.sidebar:
     tasks = all_saved_tasks()
     ordered = recommend_priority(tasks)
     st.caption(f"전체 {len(tasks)}개 · 미완료 {sum(t['상태'] != '완료' for t in tasks)}개 · 완료 {sum(t['상태'] == '완료' for t in tasks)}개")
+    file_id = st.session_state.meeting_id
+    with st.expander("업무 생성·수정", expanded=not tasks):
+        if file_id:
+            st.caption("추출 대상: " + st.session_state.meeting_name)
+            st.text_input("회의 날짜 (YYYY-MM-DD, 모르면 빈칸)", key="meeting_date_" + file_id)
+
+        choices = [None] + [(t["_file"], t["번호"]) for t in ordered]
+        labels = {(t["_file"], t["번호"]): t["업무"] + " · " + t["_source"] for t in ordered}
+        selected = st.selectbox(
+            "수정할 업무", choices,
+            format_func=lambda value: labels.get(value, "새 업무 직접 입력"),
+            key="task_editor_choice_v4",
+        )
+        current = None
+        if selected is not None:
+            source_id, task_id = selected
+            current = next((t for t in st.session_state.task_lists.get(source_id, [])
+                            if t["번호"] == task_id), None)
+            if current:
+                st.caption("업무 근거: " + current["배정근거"])
+                st.caption("담당자 근거: " + current.get("담당자근거", current["배정근거"]))
+
+        version = st.session_state.get("task_form_version", 0)
+        editor_id = hashlib.sha256(str(selected).encode()).hexdigest()[:16]
+        with st.form(f"task_editor_{editor_id}_{version}"):
+            name = st.text_input("업무명", value=current["업무"] if current else "")
+            statuses = ["대기", "진행 중", "완료"]
+            status = st.radio("진행 상태", statuses,
+                              index=statuses.index(current["상태"]) if current else 0,
+                              horizontal=True)
+            deadline = st.text_input("마감일 (YYYY-MM-DD, 미정이면 빈칸)",
+                                     value=(current["마감일"] or "") if current else "")
+            generate = st.form_submit_button(
+                "업무 목록 생성·추가",
+                help="새 업무 직접 입력에서 업무명을 입력하면 직접 추가하고, 비워두면 첨부 회의록에서 생성합니다.")
+            save = st.form_submit_button("업무 수정 저장", disabled=current is None)
+
+        try:
+            if generate:
+                if current is None and name.strip():
+                    create_manual_task(name, status, deadline)
+                    st.session_state["task_editor_notice"] = "입력한 업무를 추가했습니다."
+                    st.session_state["task_form_version"] = version + 1
+                elif file_id:
+                    with st.spinner("담당 업무를 찾고 있습니다..."):
+                        result = shared_meeting_tasks(
+                            OpenAI(timeout=60, max_retries=0), st.session_state.meeting_text, force=True)
+                    st.session_state["task_editor_notice"] = (
+                        f"회의록의 담당 업무 {len(result)}개를 확인했습니다."
+                        if result else "이 회의록에서 확인된 배정 업무가 없습니다.")
+                else:
+                    raise ValueError("새 업무 직접 입력을 선택하고 업무명을 입력하거나 회의록을 첨부해주세요.")
+                st.rerun()
+            elif save and current is not None:
+                current.setdefault("_original_name", current["업무"])
+                update_task(st.session_state.task_lists[source_id], task_id, name, status, deadline.strip())
+                st.session_state["task_editor_notice"] = "업무를 수정했습니다."
+                st.session_state["task_form_version"] = version + 1
+                st.rerun()
+        except ValueError as error:
+            st.error(str(error))
+        except Exception:
+            st.error("업무 처리에 실패했습니다. 날짜 형식과 API 연결을 확인해주세요.")
+
+        notice = st.session_state.pop("task_editor_notice", None)
+        if notice:
+            st.info(notice)
+
+
     # 좁은 사이드바에서도 버튼의 최소 너비를 보장하고 제목만 줄바꿈.
     st.markdown("""<style>
     [class*="st-key-taskcard_"] [data-testid="stHorizontalBlock"] {flex-wrap:nowrap !important; gap:0.35rem;}
@@ -975,71 +1094,6 @@ with st.sidebar:
             st.caption("출처: " + task["_source"])
     if not tasks:
         st.info("저장된 업무가 없습니다. 회의록에서 업무를 생성해주세요.")
-
-    file_id = st.session_state.meeting_id
-    with st.expander("업무 생성·수정", expanded=not tasks):
-        if file_id:
-            st.caption("추출 대상: " + st.session_state.meeting_name)
-            st.text_input("회의 날짜 (YYYY-MM-DD, 모르면 빈칸)", key="meeting_date_" + file_id)
-
-        choices = [None] + [(t["_file"], t["번호"]) for t in ordered]
-        labels = {(t["_file"], t["번호"]): t["업무"] + " · " + t["_source"] for t in ordered}
-        selected = st.selectbox(
-            "수정할 업무", choices,
-            format_func=lambda value: labels.get(value, "새 업무 직접 입력"),
-            key="task_editor_choice_v4",
-        )
-        current = None
-        if selected is not None:
-            source_id, task_id = selected
-            current = next((t for t in st.session_state.task_lists.get(source_id, [])
-                            if t["번호"] == task_id), None)
-            if current:
-                st.caption("업무 근거: " + current["배정근거"])
-                st.caption("담당자 근거: " + current.get("담당자근거", current["배정근거"]))
-
-        version = st.session_state.get("task_form_version", 0)
-        editor_id = hashlib.sha256(str(selected).encode()).hexdigest()[:16]
-        with st.form(f"task_editor_{editor_id}_{version}"):
-            name = st.text_input("업무명", value=current["업무"] if current else "")
-            statuses = ["대기", "진행 중", "완료"]
-            status = st.radio("진행 상태", statuses,
-                              index=statuses.index(current["상태"]) if current else 0,
-                              horizontal=True)
-            deadline = st.text_input("마감일 (YYYY-MM-DD, 미정이면 빈칸)",
-                                     value=(current["마감일"] or "") if current else "")
-            generate = st.form_submit_button("업무 목록 생성·추가", disabled=not bool(file_id))
-            save = st.form_submit_button("업무 수정 저장", disabled=current is None)
-            manual = st.form_submit_button("입력 업무 추가")
-
-        try:
-            if generate:
-                with st.spinner("담당 업무를 찾고 있습니다..."):
-                    result = shared_meeting_tasks(
-                        OpenAI(timeout=60, max_retries=0), st.session_state.meeting_text, force=True)
-                st.session_state["task_editor_notice"] = (
-                    f"회의록의 담당 업무 {len(result)}개를 확인했습니다."
-                    if result else "이 회의록에서 확인된 배정 업무가 없습니다.")
-                st.rerun()
-            elif save and current is not None:
-                current.setdefault("_original_name", current["업무"])
-                update_task(st.session_state.task_lists[source_id], task_id, name, status, deadline.strip())
-                st.session_state["task_editor_notice"] = "업무를 수정했습니다."
-                st.session_state["task_form_version"] = version + 1
-                st.rerun()
-            elif manual:
-                create_manual_task(name, status, deadline)
-                st.session_state["task_editor_notice"] = "입력한 업무를 추가했습니다."
-                st.session_state["task_form_version"] = version + 1
-                st.rerun()
-        except ValueError as error:
-            st.error(str(error))
-        except Exception:
-            st.error("업무 처리에 실패했습니다. 날짜 형식과 API 연결을 확인해주세요.")
-
-        notice = st.session_state.pop("task_editor_notice", None)
-        if notice:
-            st.info(notice)
 
 
 with document_tab:
