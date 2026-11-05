@@ -857,22 +857,6 @@ def show_mail_status():
                 st.rerun()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 defaults = {"messages": [], "meeting_text": "", "meeting_id": "", "meeting_name": "",
             "last_audio": None, "reply_audio": None, "input_version": 0, "task_lists": {}, "task_sources": {}, "task_analysis": {}, "deleted_tasks": {}, "reports": {}, "mail_drafts": [], "manual_mail": None}
 for key, value in defaults.items():
