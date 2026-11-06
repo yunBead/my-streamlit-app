@@ -39,3 +39,4 @@ if st.button("영화 추천 받기", type="primary"):
             time.sleep(0.01)
 
         response_container.markdown(full_response)
+        
