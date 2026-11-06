@@ -44,3 +44,4 @@ if user_input:
 
     # 대화 기록 저장
     st.session_state.messages.append(AIMessage(content=full_response))
+    
