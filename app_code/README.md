@@ -1,4 +1,4 @@
-# my-streamlit-app / app_code
+# my-streamlit-app / app_code 폴더
 
 Streamlit을 활용한 UI 구현 실습 자료 폴더
 
