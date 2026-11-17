@@ -14,3 +14,4 @@ openai==3.16.2
 - app.py : 최근 실행 파일
 - app_code/ : 실행한 app코드 저장 디렉토리
 - app_project_3.py : 3차 미니프로젝트 파일
+- app_project04.py : 4차 미니프로젝트 파일
